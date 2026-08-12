@@ -180,7 +180,8 @@ allrinda deploy rinda-globe-dashboard --watch
 
 - **콘텐츠 해시 캐시 버스팅** — 빌드할 때 `app.js` / `styles.css` / `data.js` 의 md5를 구해 `index.html` 의 `?v=` 토큰을 갈아끼웁니다. 덕분에 `immutable` 1년 캐시를 안전하게 걸 수 있고, 매일 갱신되는 `data.js` 도 **자동으로** 새 URL을 얻습니다. (사람이 버전 문자열을 손으로 올리는 걸 잊어도 안전합니다.)
 - **사전 압축** — 빌드 타임에 `gzip -9` 로 미리 압축해 `gzip_static` 으로 서빙합니다. `data.js` 기준 **1,016 KB → 45 KB (95.5% 감소)**.
-- **API 키 서버 보관** — `/api/gemini/*` 요청에 nginx가 서버 환경변수의 키를 붙여 Google로 넘깁니다. 키는 번들·요청라인·액세스로그 어디에도 남지 않고, `generateContent` 외의 경로는 403으로 막습니다.
+- **API 키 서버 보관** — `/api/gemini/*` 요청에 nginx가 서버 환경변수의 키를 붙여 Google로 넘깁니다. 키는 번들·요청라인·액세스로그 어디에도 남지 않습니다.
+- **프록시 남용 방지** — 이 프록시는 인터넷에 열려 있고 **회사 Gemini 비용을 씁니다.** 그래서 모델을 앱이 실제로 쓰는 `gemini-2.5-pro` / `gemini-2.5-flash` 로만 허용하고(그 외 403), IP당 `20r/m` + burst 10 으로 제한합니다(초과 시 429). 경로 모양만 막으면 누구나 가장 비싼 모델을 우리 계정으로 호출할 수 있습니다.
 - **보안 헤더** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`.
 
 ---
@@ -216,12 +217,16 @@ rinda-globe-dashboard/
 │   └── Gemini 연동         #   프록시 우선 → 직접 호출 폴백, 모델 체인 재시도
 ├── data.js                 # 🤖 자동 생성 — 149국 × 12업종 (직접 수정 금지)
 ├── styles.css              # 글래스모피즘 + 네온 HUD 테마
+├── robots.txt              # ⚠️ sitemap URL — 배포 도메인과 반드시 일치
+├── sitemap.xml             # ⚠️ loc URL — 배포 도메인과 반드시 일치
+├── requirements.txt        # 파이썬 파이프라인 의존성 (requests, beautifulsoup4)
 │
 ├── scripts/                # 파이썬 데이터 파이프라인 (CI 전용)
 │   ├── fetch_worldbank.py  #   World Bank API → 거시지표
 │   ├── fetch_market.py     #   환율 · 원자재 · 지수
 │   ├── generate_data.py    #   업종별 시장 추정 + data.js 생성
-│   └── run_all.py          #   위 3개를 순서대로 실행
+│   ├── run_all.py          #   위 3개를 순서대로 실행
+│   └── google_apps_script.js  # 리드 수집 웹훅 (Apps Script에 별도 배포)
 ├── raw_data/               # 파이프라인 중간 산출물 (JSON)
 │
 ├── Dockerfile              # 2단계 빌드 — 해시/압축 → nginx
@@ -240,7 +245,7 @@ rinda-globe-dashboard/
 | 프론트엔드 | Vanilla JS (ES2020+) — 프레임워크·번들러 없음 |
 | 3D 렌더링 | [globe.gl](https://github.com/vasturiano/globe.gl) 2.27 (three.js) + topojson-client |
 | AI | Gemini 2.5 Pro → 2.5 Flash 폴백, Google Search 그라운딩 |
-| 데이터 | World Bank Open Data, IMF, ExchangeRate API |
+| 데이터 | World Bank Open Data, IMF, Yahoo Finance(비공식), ExchangeRate API |
 | 서빙 | nginx 1.27 alpine (Docker 다단계 빌드) |
 | 배포 | 올린다(Allrinda) — GitHub 웹훅 자동 배포 |
 
@@ -248,7 +253,8 @@ rinda-globe-dashboard/
 
 ## 데이터에 대해
 
-- **출처** — 거시경제 지표는 [World Bank Open Data](https://data.worldbank.org/), 환율은 ExchangeRate API에서 가져옵니다. 실제 관측값입니다.
+- **출처** — 거시경제 지표는 [World Bank Open Data](https://data.worldbank.org/), 주가·지수·원자재는 **Yahoo Finance 비공식 quote API**(`query1.finance.yahoo.com`), 환율은 [ExchangeRate API](https://open.er-api.com/)에서 가져옵니다. 실제 관측값입니다.
+  - Yahoo 쪽은 공식 문서가 없는 비공개 엔드포인트라 예고 없이 바뀔 수 있습니다. 실패 시 파이프라인은 환율 API로 폴백합니다.
 - **업종별 수치** — 국가별 12개 업종의 시장규모·성장률·잠재력·글로벌 순위는 GDP·인구·인터넷 보급률·무역의존도 등을 조합한 **모델 추정치**입니다. 실측 산업 통계가 아닙니다.
 - **갱신 주기** — 매일 06:00 KST에 GitHub Actions가 파이프라인을 돌려 `data.js` 를 커밋하고, 그 푸시가 올린다 재배포를 트리거합니다.
 

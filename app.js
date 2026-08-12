@@ -53,13 +53,21 @@ async function callGemini(model, body, signal) {
                 _geminiBackend = 'proxy';
                 return resp;
             }
+            // 501/404 are the deployment answering "there is no proxy here",
+            // which cannot change mid-session — safe to remember.
             if (DEBUG) console.log(`[Gemini] proxy unavailable (HTTP ${resp.status}) → direct`);
             _geminiBackend = 'direct';
         } catch (e) {
             // A user-initiated abort must not be misread as "no proxy here".
             if (e.name === 'AbortError') throw e;
-            if (DEBUG) console.log('[Gemini] proxy unreachable → direct:', e.message);
-            _geminiBackend = 'direct';
+            // A network error is NOT evidence the proxy is absent — it may be a
+            // blip, a dropped connection, or the 240s pro call being cut off.
+            // Latching 'direct' here would permanently downgrade a healthy
+            // proxied deployment to the key-in-URL path for the rest of the
+            // page's life (and, once the embedded key is removed, break AI
+            // entirely). Fall back for THIS call only and retry the proxy next
+            // time.
+            if (DEBUG) console.log('[Gemini] proxy call failed, one-off fallback:', e.message);
         }
     }
 

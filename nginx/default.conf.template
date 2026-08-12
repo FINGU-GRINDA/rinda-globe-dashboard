@@ -46,17 +46,27 @@ server {
         default_type application/json;
         set $gemini_key "${GEMINI_API_KEY}";
 
+        # Request shape is validated BEFORE the key check, so a disallowed path
+        # answers 403 whether or not this deployment has a key. Doing it the
+        # other way round leaked deployment state: an unconfigured host replied
+        # 501 to paths it should simply refuse.
+        #
+        # The model is pinned to the two the client's modelChain actually uses.
+        # Allowing any [A-Za-z0-9._-]+ let a caller select the priciest model on
+        # our bill — the path shape was restricted, the spend was not.
+        if ($gemini_path !~ "^v1beta/models/gemini-2\.5-(pro|flash):generateContent$") {
+            return 403 '{"error":"endpoint_not_allowed"}';
+        }
+
         # No key configured → tell the client explicitly (501) so it can fall
         # back instead of hanging on a 400 from Google.
         if ($gemini_key = "") {
             return 501 '{"error":"gemini_proxy_not_configured"}';
         }
 
-        # Only generateContent is proxied — this is not an open relay to
-        # Google's API surface.
-        if ($gemini_path !~ "^v1beta/models/[A-Za-z0-9._-]+:generateContent$") {
-            return 403 '{"error":"endpoint_not_allowed"}';
-        }
+        # Volume cap. burst absorbs one report run (company lookup + analysis,
+        # each with a pro→flash retry); sustained abuse gets 429.
+        limit_req zone=gemini_rl burst=10 nodelay;
 
         proxy_pass https://generativelanguage.googleapis.com/$gemini_path?key=$gemini_key;
 
@@ -135,5 +145,9 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    error_page 404 /index.html;
+    # No `error_page 404 /index.html` here on purpose. The try_files above
+    # already covers SPA deep links, and a server-wide handler would also turn
+    # a genuinely missing .js/.css into a 200 of HTML — which surfaces to the
+    # browser as "Unexpected token '<'" instead of an honest 404.
+
 }
