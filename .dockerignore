@@ -1,0 +1,30 @@
+# The image only needs the six static files the Dockerfile COPYs by name.
+# Everything below is either CI-only, editor state, or would be dead weight in
+# the build context — keeping it out makes the build upload ~350 KB instead of
+# the whole repo history's worth of JSON.
+.git
+.github
+.vscode
+.claude
+
+# Python data pipeline — runs in GitHub Actions, never in the container
+scripts/
+raw_data/
+requirements.txt
+__pycache__/
+*.py[cod]
+venv/
+
+# Docs
+README.md
+docs/
+LICENSE
+
+# Local env — must never reach an image layer
+.env
+.env.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
