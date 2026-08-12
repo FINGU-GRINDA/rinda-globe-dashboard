@@ -4,7 +4,7 @@
 
 ### 149개국 × 12개 산업 데이터를 3D 지구본에 올리고, AI가 우리 회사 맞춤 해외진출 전략을 써주는 대시보드
 
-[![Live](https://img.shields.io/badge/🚀_Live_Demo-rinda--globe--dashboard.rinda.ai-00f0ff?style=for-the-badge)](https://rinda-globe-dashboard.rinda.ai/)
+[![Live](https://img.shields.io/badge/🚀_Live_Demo-rinda--globe.rinda.ai-00f0ff?style=for-the-badge)](https://rinda-globe.rinda.ai/)
 [![Deploy](https://img.shields.io/badge/배포-올린다_(Allrinda)-6f42c1?style=for-the-badge)](https://ops.rinda.ai)
 
 ![Countries](https://img.shields.io/badge/국가-149개국-00f0ff?style=flat-square)
@@ -146,24 +146,33 @@ python scripts/run_all.py        # World Bank → 시장데이터 → data.js
 
 ## 배포
 
-이 저장소는 **[올린다(Allrinda)](https://ops.rinda.ai)** 에 배포되어 있습니다. `main` 에 푸시하면 GitHub 웹훅이 자동으로 재배포합니다 — 매일 도는 데이터 갱신 커밋도 포함해서요.
+이 저장소는 **[올린다(Allrinda)](https://ops.rinda.ai)** 에 배포되어 있습니다. 등록된 브랜치에 푸시하면 GitHub 웹훅이 자동으로 재배포합니다 — 매일 도는 데이터 갱신 커밋도 포함해서요.
 
 | 항목 | 값 |
 |---|---|
 | 앱 이름 | `rinda-globe-dashboard` |
-| 타입 | `docker` (nginx 정적 서빙) |
+| 타입 | `docker` (저장소의 Dockerfile로 빌드) |
 | 포트 | `3000` |
-| 헬스체크 | `/healthz` → `{"status":"ok"}` |
-| 도메인 | [rinda-globe-dashboard.rinda.ai](https://rinda-globe-dashboard.rinda.ai/) |
+| 헬스체크 | `https://rinda-globe.rinda.ai/healthz` → `{"status":"ok"}` |
+| 도메인 | **[rinda-globe.rinda.ai](https://rinda-globe.rinda.ai/)** |
+| 자동 배포 | 켜짐 |
 
 ```bash
 allrinda apps create --name rinda-globe-dashboard \
   --repo FINGU-GRINDA/rinda-globe-dashboard \
   --type docker --branch main --port 3000
 
-allrinda env set rinda-globe-dashboard GEMINI_API_KEY=...   # 선택
+allrinda env push rinda-globe-dashboard --file .env   # GEMINI_API_KEY (선택)
 allrinda deploy rinda-globe-dashboard --watch
 ```
+
+> [!NOTE]
+> 헬스체크(`healthUrl`)는 **절대 URL**이어야 합니다. `/healthz` 같은 경로만 넣으면 프로브가 돌지 않아
+> 컨테이너가 멀쩡한데도 상태가 계속 `ok: false` 로 보입니다.
+>
+> 그리고 앱 이름은 `rinda-globe-dashboard` 지만 배정된 도메인은 `rinda-globe.rinda.ai` 입니다.
+> `index.html` 의 canonical/OG 태그와 `sitemap.xml`·`robots.txt` 는 **실제 도메인** 기준으로 맞춰져 있어야
+> 검색엔진이 엉뚱한 주소를 인덱싱하지 않습니다.
 
 ### 이미지가 하는 일
 

@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://rinda-globe-dashboard.rinda.ai/sitemap.xml
+Sitemap: https://rinda-globe.rinda.ai/sitemap.xml
