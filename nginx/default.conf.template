@@ -1,0 +1,139 @@
+# Rendered at container start by the nginx image entrypoint (envsubst).
+# Only ${GEMINI_API_KEY} is substituted — see NGINX_ENVSUBST_FILTER in the
+# Dockerfile — so nginx's own $uri / $host variables survive untouched.
+
+server {
+    # IPv4 only, deliberately. A `listen [::]:3000` here is fatal — not
+    # degraded — on a container without IPv6: nginx aborts at startup with
+    # "Address family not supported by protocol" and the whole site is down.
+    # The image's 10-listen-on-ipv6-by-default.sh only guards the stock
+    # default.conf, not our template.
+    listen       3000;
+    server_name  _;
+
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    charset       utf-8;
+    charset_types text/css application/javascript application/json text/xml;
+
+    # data.js is ~1 MB; the AI report POST bodies are small. 2 MB covers both.
+    client_max_body_size 2m;
+
+    # ---- health check ------------------------------------------------------
+    # Allrinda polls this. Kept above the static rules and out of the access log
+    # so a 30s probe interval doesn't drown the real traffic.
+    # `default_type`, not `add_header Content-Type` — add_header appends a
+    # second header rather than replacing the one nginx already emits, which
+    # leaves the response typed application/octet-stream.
+    location = /healthz {
+        access_log off;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 200 '{"status":"ok"}';
+    }
+
+    # ---- Gemini reverse proxy ---------------------------------------------
+    # Keeps the API key server-side. The browser calls
+    #   /api/gemini/v1beta/models/<model>:generateContent
+    # and nginx appends ?key=<GEMINI_API_KEY> on the way out, so the key never
+    # reaches the client bundle, the request line, or the access log.
+    location ~ ^/api/gemini/(?<gemini_path>.+)$ {
+        # Location level, not inside the `if`s below — `default_type` is not a
+        # valid directive in an `if` context and nginx refuses to start on it.
+        # Harmless for the proxied path: it only fills in a Content-Type that
+        # is absent, and Google always sends its own.
+        default_type application/json;
+        set $gemini_key "${GEMINI_API_KEY}";
+
+        # No key configured → tell the client explicitly (501) so it can fall
+        # back instead of hanging on a 400 from Google.
+        if ($gemini_key = "") {
+            return 501 '{"error":"gemini_proxy_not_configured"}';
+        }
+
+        # Only generateContent is proxied — this is not an open relay to
+        # Google's API surface.
+        if ($gemini_path !~ "^v1beta/models/[A-Za-z0-9._-]+:generateContent$") {
+            return 403 '{"error":"endpoint_not_allowed"}';
+        }
+
+        proxy_pass https://generativelanguage.googleapis.com/$gemini_path?key=$gemini_key;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host       generativelanguage.googleapis.com;
+        proxy_set_header Connection "";
+        # Never forward the browser's cookies/auth to Google.
+        proxy_set_header Cookie        "";
+        proxy_set_header Authorization "";
+        proxy_ssl_server_name on;
+        proxy_ssl_protocols   TLSv1.2 TLSv1.3;
+
+        # gemini-2.5-pro with Search grounding is slow; the client allows 240s.
+        # Stay above that so nginx is never the one to cut the request off.
+        proxy_connect_timeout 15s;
+        proxy_send_timeout    300s;
+        proxy_read_timeout    300s;
+        proxy_buffering       off;
+
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/security-headers.conf;
+    }
+
+    # Anything else under /api/ is not ours.
+    location /api/ {
+        default_type application/json;
+        return 404 '{"error":"not_found"}';
+    }
+
+    # Never serve the pipeline's source data or VCS metadata, even if a future
+    # change starts copying more of the repo into the image.
+    location ~ ^/(?:\.git|scripts|raw_data|nginx)/ {
+        deny all;
+    }
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+
+    # ---- static assets -----------------------------------------------------
+    # index.html rewrites app.js / styles.css / data.js to ?v=<content-hash> at
+    # build time, so these URLs are immutable by construction: a changed file
+    # gets a changed URL. That is what makes a 1-year cache safe here even
+    # though the daily data bot rewrites data.js without touching index.html.
+    # No `expires` directive here: it emits its own Cache-Control, which would
+    # ship alongside the add_header one as a duplicate, ambiguous pair.
+    location ~* \.(?:js|css)$ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        include /etc/nginx/security-headers.conf;
+    }
+
+    location ~* \.(?:png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|eot)$ {
+        add_header Cache-Control "public, max-age=2592000" always;
+        include /etc/nginx/security-headers.conf;
+    }
+
+    # The entry point must always revalidate — it is what hands out the new
+    # asset hashes after a deploy.
+    location = / {
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        include /etc/nginx/security-headers.conf;
+        try_files /index.html =404;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        include /etc/nginx/security-headers.conf;
+    }
+
+    location = /robots.txt  { access_log off; expires 1d; }
+    location = /sitemap.xml { access_log off; expires 1d; }
+
+    # Single page, no client-side router — fall back to index.html so a stray
+    # deep link lands somewhere useful rather than on an nginx 404 page.
+    location / {
+        include /etc/nginx/security-headers.conf;
+        try_files $uri $uri/ /index.html;
+    }
+
+    error_page 404 /index.html;
+}

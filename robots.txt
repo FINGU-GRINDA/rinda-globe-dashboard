@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://ehddusheo.github.io/globe-dashboard/sitemap.xml
+Sitemap: https://rinda-globe-dashboard.rinda.ai/sitemap.xml

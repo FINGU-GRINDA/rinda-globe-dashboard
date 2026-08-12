@@ -1,8 +1,71 @@
 // === GLOBAL INDUSTRY INTELLIGENCE - APP LOGIC ===
-const GEMINI_KEY = [
+
+// ---------------------------------------------------------------------------
+//  Gemini backend
+// ---------------------------------------------------------------------------
+// Preferred path is the same-origin proxy in nginx (see nginx/default.conf.template),
+// which appends the key from the GEMINI_API_KEY server env. Nothing secret then
+// reaches the browser.
+//
+// GEMINI_KEY below is the legacy fallback for hosts without that proxy
+// (GitHub Pages, file://). The base64 split is obfuscation, not protection —
+// this value is readable by anyone who opens devtools.
+//
+//   → Once GEMINI_API_KEY is set on the server, rotate this key in Google AI
+//     Studio and set GEMINI_FALLBACK_KEY_PARTS to [] to stop shipping it.
+//     Everything else keeps working; callGemini() just stops falling back.
+const GEMINI_FALLBACK_KEY_PARTS = [
     'QUl6YVN5Q2RwVw==','NjBHT0lBQzZrdA==',
     'YjJqV1dFS3JuZQ==','VVZDd0pXVkVB'
-].map(p => atob(p)).join('');
+];
+const GEMINI_KEY = GEMINI_FALLBACK_KEY_PARTS.map(p => atob(p)).join('');
+
+const GEMINI_PROXY_BASE = '/api/gemini/v1beta/models/';
+const GEMINI_DIRECT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
+
+// 'unknown' until the first call tells us which backend this host actually has.
+let _geminiBackend = 'unknown';   // 'unknown' | 'proxy' | 'direct'
+
+// True while a backend is still plausible. Used by the pre-flight guards so
+// that emptying GEMINI_FALLBACK_KEY_PARTS does not disable the AI features on
+// a proxied deployment.
+function hasAIBackend() {
+    return _geminiBackend !== 'direct' || Boolean(GEMINI_KEY);
+}
+
+// Single entry point for every Gemini call. Tries the proxy, and falls back to
+// the direct call only for the two answers that mean "this host has no proxy":
+// 501 (key not configured) and 404 (no such route, e.g. GitHub Pages).
+// Any other status — including 429 and 5xx from Google — is handed back to the
+// caller untouched, so the existing model-chain retry logic still sees it.
+async function callGemini(model, body, signal) {
+    const init = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal
+    };
+
+    if (_geminiBackend !== 'direct') {
+        try {
+            const resp = await fetch(`${GEMINI_PROXY_BASE}${encodeURIComponent(model)}:generateContent`, init);
+            if (resp.status !== 501 && resp.status !== 404) {
+                _geminiBackend = 'proxy';
+                return resp;
+            }
+            if (DEBUG) console.log(`[Gemini] proxy unavailable (HTTP ${resp.status}) → direct`);
+            _geminiBackend = 'direct';
+        } catch (e) {
+            // A user-initiated abort must not be misread as "no proxy here".
+            if (e.name === 'AbortError') throw e;
+            if (DEBUG) console.log('[Gemini] proxy unreachable → direct:', e.message);
+            _geminiBackend = 'direct';
+        }
+    }
+
+    if (!GEMINI_KEY) throw new Error('AI 백엔드가 설정되지 않았습니다. (GEMINI_API_KEY 미설정)');
+    return fetch(`${GEMINI_DIRECT_BASE}${model}:generateContent?key=${GEMINI_KEY}`, init);
+}
 
 // === Security Utilities ===
 const DEBUG = false;
@@ -852,7 +915,7 @@ function showUrlStatus(msg, type) {
 }
 
 async function lookupCompany(url, formEl) {
-    if (!GEMINI_KEY) { showUrlStatus('⚠️ 시스템 오류 — 잠시 후 다시 시도해주세요.', 'err'); return; }
+    if (!hasAIBackend()) { showUrlStatus('⚠️ 시스템 오류 — 잠시 후 다시 시도해주세요.', 'err'); return; }
     if (!_rlLookup()) { showUrlStatus('⏳ 잠시 후 다시 시도해주세요. (30초 대기)', 'err'); return; }
 
     const lookupBtn = formEl.querySelector('#wz-url-lookup');
@@ -899,7 +962,6 @@ employee_range 값: "u10" (10명 이하), "u50" (11~50명), "u200" (51~200명), 
     let result = null;
     for (const { name: model, timeout, search: useSearch } of modelChain) {
         try {
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
             const body = {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: { temperature: 0.2, maxOutputTokens: 4096 }
@@ -908,12 +970,7 @@ employee_range 값: "u10" (10명 이하), "u50" (11~50명), "u200" (51~200명), 
 
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeout);
-            const resp = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                signal: controller.signal
-            });
+            const resp = await callGemini(model, body, controller.signal);
             clearTimeout(timeoutId);
 
             if (!resp.ok) { console.warn(`[Lookup] ${model}: HTTP ${resp.status}`); continue; }
@@ -1492,7 +1549,7 @@ countries 배열에 5개국 모두 포함해주세요. 모든 숫자 필드에 �
 }
 
 async function callGeminiAPI(results) {
-    if (!GEMINI_KEY) return null;
+    if (!hasAIBackend()) return null;
 
     const { systemInstruction, userMessage } = buildGeminiPrompt(results);
 
@@ -1520,15 +1577,7 @@ async function callGeminiAPI(results) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-            const resp = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                    signal: controller.signal
-                }
-            );
+            const resp = await callGemini(model, body, controller.signal);
             clearTimeout(timeoutId);
 
             if (!resp.ok) {
